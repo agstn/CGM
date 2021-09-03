@@ -10,15 +10,19 @@ output:
 
 ```{=html}
 <style>
-
 element.style {
 width: 900px;
 height: 550px;
 margin-top: 10px;
 margin-bottom: 10px;
 }
-
 </style>
+```
+
+```{css, echo=FALSE}
+.bgwhite {
+   background-color: white;
+}
 ```
 
 ```{r knitr-defaults}
@@ -28,7 +32,7 @@ options(width=170)
 ```
 
 ```{r load-packages}
-pacman::p_load(tidyverse, rio, gt)
+pacman::p_load(tidyverse, rio, gt, gtsummary)
 pacman::p_load(labelled)
 pacman::p_load(patchwork)
 pacman::p_load(iglu)
@@ -54,15 +58,10 @@ CGM_data_2 <- CGM_data_1 %>%
           VALUE_SIM  = 'Simulated_CGMValue',
           TIME = 'CGMTIME',
           DAY = 'CGMDAY') %>% 
-   select(SUBJID,
-          TREATMENT,
-          VISITNUM_N,
-          VISITNUM_C,
-          VISITNUM_M,
-          DAY,
-          TIME,
-          VALUE_ORIG,
-          VALUE_SIM) %>% 
+   select(SUBJID, TREATMENT,
+          VISITNUM_N, VISITNUM_C, VISITNUM_M,
+          DAY, TIME,
+          VALUE_ORIG, VALUE_SIM) %>% 
    mutate(DAY_TIME = as.POSIXct(str_glue("2021-{VISITNUM_M}-0{DAY} {TIME}:00")),
           .after = TIME) 
 
@@ -91,18 +90,17 @@ plot_ranges_2 <- function (data) {
    ns = length(subject)
    if (ns > 1) {
       subject = subject[1]
-      warning(paste("The provided data have", ns, "subjects. The plot will only be created for subject", 
-                    subject))
-      data = data %>% dplyr::filter(id == subject)
+      warning(paste("The provided data have", ns, "subjects. The plot will only be created for subject", subject))
+      data = data %>% filter(id == subject)
    }
    
    ranges <- agp_metrics(data, shinyformat = FALSE) %>% 
-      dplyr::select(-c("id", "active_percent", "mean", "GMI", "CV")) %>% 
-      dplyr::summarise(range = c("very_low", "low", "target", "high", "very_high"), 
-                       percent = c(below_54, below_70 - below_54, in_range_70_180, above_180 - above_250, above_250))
+      select(-c("id", "active_percent", "mean", "GMI", "CV")) %>% 
+      summarise(range = c("very_low", "low", "target", "high", "very_high"), 
+                percent = c(below_54, below_70 - below_54, in_range_70_180, above_180 - above_250, above_250))
    
    ranges = ranges %>% 
-      dplyr::mutate(range = factor(range, levels = c("very_high",  "high", "target", "low", "very_low")))
+      mutate(range = factor(range, levels = c("very_high",  "high", "target", "low", "very_low")))
    
    colors <- c("#F9B500", "#F9F000", "#48BA3C", "#F92D00", "#8E1B1B")
    
@@ -135,13 +133,9 @@ CGM_iglu_data <- CGM_data_2 %>%
    rename(visit = visitnum_c) %>% 
    nest_by(studyid, treatment, visit)
 
-CGM_iglu_data %>% 
+CGM_iglu_data <- CGM_iglu_data %>% 
    ungroup() %>% 
-   count(studyid) %>% 
-   filter(n == 3) %>% 
-   pull(studyid) -> CGM_n3
-
-export(CGM_n3, "CGM_n3.rds")
+   add_count(studyid, name = 'visit_n')
 
 CGM_iglu_metrics <- CGM_iglu_data %>%
    rowwise() %>% 
@@ -167,17 +161,25 @@ CGM_iglu_metrics <- CGM_iglu_data %>%
    ) %>%
    unnest(c(all_metrics))
 
-export(CGM_iglu_metrics, "CGM_iglu_metrics.rds")
+CGM_iglu_metrics %>% 
+   select(studyid, treatment, visit, visit_n, data) %>% 
+   export('CGM_iglu_data.rds')
+
+CGM_iglu_metrics %>% 
+   select(-panel, -data, -id) %>% 
+   export('CGM_iglu_stats.rds')
 ```
 
 # VISUALIZATION {data-navmenu="AGP"}
-
 ```{r iglu-trelliscope}
 pacman::p_load(trelliscopejs)
 
 CGM_iglu_metrics %>% 
-   select(studyid, treatment, visit,
-          ADRR, AUC, COGI, Conga, eA1C, GMI, GVP, HBGI, LBGI, IGC,
+   select(studyid, treatment, visit, visit_n,
+          ADRR, AUC, COGI, Conga, CV, CV_Measures_Mean, CV_Measures_SD, eA1C, GMI, 
+          GRADE, GRADE_eugly, GRADE_hyper, GRADE_hypo, GVP, HBGI, hyper_index, hypo_index, 
+          IGC, J_index, LBGI, M_value, MAD, MAG, MAGE, Mean, Median, MODD, range, SD, SD.Roc, 
+          SDb, SDbdm, SDdm, SDhhmm, SDw, SDwsh,
           panel) %>% 
    ungroup() %>% 
    set_labels(list(ADRR = 'average daily risk range', 
@@ -192,35 +194,33 @@ CGM_iglu_metrics %>%
                    IGC = 'Index of Glycemic Control')) %>%
    mutate(across(where(is.numeric), ~round(.x, 2))) %>% 
    trelliscope(name = 'CGM: Continuous Glucose Monitoring Visualization',
-               desc = 'Display Ambulatory Glucose Profile (AGP) statistics (for subjects with ALL 3 visits)',
+               desc = 'Display Ambulatory Glucose Profile (AGP) statistics',
                panel_col = 'panel',
                path = './CGM-trelliscope',
                ncol = 3,
                nrow = 1,
                height = 900,
                width  = 700,
-               state = list(sort = list(sort_spec('studyid')))
-   )
+               state = list(sort = list(sort_spec('studyid'))))
 ```
 
-# PLOT AGP {data-navmenu="AGP"}
+# HELP PLOT AGP {data-navmenu="AGP"}
 ```{r, out.width="1000px", out.extra="data-external=1"}
 pacman::p_load(webshot)
 knitr::include_url("https://irinagain.github.io/iglu/reference/plot_agp.html", height = "800px")
 ```
 
-# PLOT RANGES {data-navmenu="AGP"}
+# HELP PLOT RANGES {data-navmenu="AGP"}
 ```{r, out.width="1000px", out.extra="data-external=1"}
 knitr::include_url("https://irinagain.github.io/iglu/reference/plot_ranges.html", height = "800px")
 ```
 
-# PLOT DAILY {data-navmenu="AGP"}
+# HELP PLOT DAILY {data-navmenu="AGP"}
 ```{r, out.width="1000px", out.extra="data-external=1"}
 knitr::include_url("https://irinagain.github.io/iglu/reference/plot_daily.html", height = "800px")
 ```
 
 # MODEL RESULTS
-
 ```{r party-model}
 CGM_data_m1 <- CGM_iglu_metrics %>%
    select(studyid, treatment, visit, data) %>%
@@ -247,7 +247,7 @@ CGM_data_m1 <- CGM_iglu_metrics %>%
 target_plot <- CGM_data_m1 %>% 
    lmtree(pct ~ state | treatment + visit, data = .,
           alpha = 0.10, bonferroni  = FALSE) %>% 
-   ggparty(terminal_space = 0.6, horizontal = TRUE) +
+   ggparty(terminal_space = 0.4, horizontal = TRUE) +
    geom_edge() +
    geom_edge_label() +
    geom_node_label(line_list = list(aes(label = splitvar),
@@ -283,48 +283,42 @@ target_plot <- CGM_data_m1 %>%
       shared_axis_labels = TRUE
    )
 
-ggsave(str_glue("CGM-models/CGM_target.png"),
+ggsave(str_glue("CGM_target.png"),
        plot = target_plot,
        scale = 4,
        width = 900, height = 600, units = 'px')
 ```
 
-![party-model](CGM-models/CGM_target.png){width="75%", height="75%"}
-
-# DEFINITIONS {data-navmenu="OTHER METRICS"}
-
-```{r}
-CGM_metric <- import("CGM_metric.csv")
-
-CGM_metric %>% 
-   gt() %>% 
-   cols_move_to_end(Metric_Time_dependent) %>% 
-   cols_label(Metric_Name = "Name",
-              Metric_Iglu = "iglu R function",
-              Metric_Time_dependent = "Time Dependent") %>% 
-   fmt_missing(Reference, missing_text = "-") %>% 
-   fmt_markdown(c(Reference, Metric_Iglu)) %>% 
-   cols_align('left') %>% 
-   cols_width(Metric_Name ~ px(450),
-              Metric_Iglu ~ px(250),
-              Reference ~ px(250)) %>% 
-   tab_options(table.font.size = "medium", 
-               data_row.padding = px(2), 
-               footnotes.padding = px(2), 
-               source_notes.padding = px(2))
-```
+![party-model](CGM_target.png){width="75%", height="75%"}
 
 # MODEL RESULTS {data-navmenu="OTHER METRICS"}
 
-```{r party-mod-viz}
-# trick: https://www.johannesbgruber.eu/post/2021-07-28-let-users-choose-which-plot-you-want-to-show/
+## Inputs {.sidebar}
+**Model Results Legend**    
+Recursive Partytioning models results ([partykit](https://cran.r-project.org/web/packages/partykit/index.html)) using p-values to determine splits in the data. Here is the conditional inference tree which shows how and what factors contribute to the differential effect of Continuous Glucose Monitoring (CGM) during the clinical trial. The [ggparty](https://cran.r-project.org/web/packages/ggparty/index.html) function allows to use the ggplot syntax to customize the tree which allows more adjustments and is more aesthetically pleasing. Starting from the top the graphic represents:
 
-for(i in c("ADRR","AUC", "COGI", "Conga", "eA1C", "GMI", "GVP", "HBGI", "LBGI", "IGC")){
+-   [geom_rug](https://ggplot2.tidyverse.org/reference/geom_rug.html) A Rug display representing the individual responses
+
+-   [stat_halfeye](https://mjskay.github.io/ggdist/reference/stat_sample_slabinterval.html) A probability density (or mass) function
+
+-   [point_interval](https://mjskay.github.io/ggdist/reference/point_interval.html) Point interval representing the mean with 66% and 95% confidence interval
+
+-   [geom_boxplot](https://ggplot2.tidyverse.org/reference/geom_boxplot.html) A boxplot to compactly displays the distribution. It visualizes five summary statistics (the median, the 25th and 75th percentiles, and two whiskers. The whisker extends +/- 1.5 * IQR from the hinges
+
+## Column {.bgwhite}
+```{r party-mod-viz}
+CGM_metric <- import("CGM_metric.csv")
+
+vars <- CGM_metric %>% 
+   filter(Metric_function != '') %>% 
+   arrange(Metric_function) 
+
+for(i in vars$Metric_function){
    
    metric_run <- sym(paste(i))
    
-   metric_lab <- CGM_metric %>% 
-      filter(str_detect(Metric_Name, paste(metric_run))) %>% 
+   metric_lab <- vars %>% 
+      filter(Metric_function == i) %>% 
       pull(Metric_Name)
    
    metric_plot <- CGM_iglu_metrics %>% 
@@ -335,7 +329,7 @@ for(i in c("ADRR","AUC", "COGI", "Conga", "eA1C", "GMI", "GVP", "HBGI", "LBGI", 
       geom_edge() +
       geom_edge_label() +
       geom_node_label(line_list = list(aes(label = splitvar),
-                                       aes(label = gtsummary::style_pvalue(p.value, digits = 2, prepend_p = TRUE))),
+                                       aes(label = style_pvalue(p.value, digits = 2, prepend_p = TRUE))),
                       line_gpar = list(list(size = 9),
                                        list(size = 9, fontface = 'bold')),
                       ids = "inner") +
@@ -358,35 +352,45 @@ for(i in c("ADRR","AUC", "COGI", "Conga", "eA1C", "GMI", "GVP", "HBGI", "LBGI", 
    ggsave(str_glue("CGM-models/{metric_run}.png"),
           plot = metric_plot,
           scale = 4,
-          width = 850, height = 600, units = 'px')
-   
+          width = 900, height = 600, units = 'px')
 }
 ```
 
-<select id="imgList"> 
-<option value="CGM-models/ADRR.png">ADRR (average daily risk range)</option>
-<option value="CGM-models/AUC.png">AUC (Area Under Curve)</option>
-<option value="CGM-models/COGI.png">COGI (Continuous GlucoseMonitoring Index)</option> 
-<option value="CGM-models/Conga.png">CONGA (Continuous Overall Net Glycemic Action)</option>
-<option value="CGM-models/eA1C.png">eA1c (Estimated A1c)</option>
-<option value="CGM-models/GMI.png">GMI (Glucose Management Indicator)</option> 
-<option value="CGM-models/GVP.png">GVP (Glucose Variability Percentage)</option>
-<option value="CGM-models/HBGI.png">HBGI (High Blood Glucose Index)</option> 
-<option value="CGM-models/LBGI.png">LBGI (Low Blood Glucose Index)</option> 
-<option value="CGM-models/IGC.png">IGC (Index of Glycemic Control)</option>
-</select>
-<img src="CGM-models/ADRR.png" id="image" width="75%" height="75%"/>
+```{r}
+# devtools::install_github("walkerke/bsselectR")
+library(bsselectR)
 
+plots_in        <- str_glue("CGM-models/{vars$Metric_function}.png")
+names(plots_in) <- vars$Metric_Name
 
-<script type="text/javascript">             
-var img = document.getElementById("image");
+bsselect(plots_in, 
+         frame_height = "800px", frame_width = "1200px",
+         style = "btn-primary",
+         box_width = 'fit',
+         type = "img", 
+         selected = "ADRR (Average Daily Risk Range)", 
+         live_search = TRUE, 
+         show_tick = TRUE)
+```
 
-function setClass(e) {
-  var select = e.target;
-  img.src = select.options[select.selectedIndex].value;
-  return false;
-}
-
-document.getElementById("imgList").onchange = setClass;
-</script>
-
+# DEFINITIONS {data-navmenu="OTHER METRICS"}
+```{r}
+CGM_metric %>% 
+   gt() %>% 
+   cols_move_to_end(Metric_Time_dependent) %>% 
+   cols_move(Metric_function, Metric_Name) %>% 
+   cols_label(Metric_function = 'iglu R output',
+              Metric_Name = "Name",
+              Metric_Iglu = "iglu R function",
+              Metric_Time_dependent = "Time Dependent") %>% 
+   fmt_missing(Reference, missing_text = "-") %>% 
+   fmt_markdown(c(Reference, Metric_Iglu)) %>% 
+   cols_align('left') %>% 
+   cols_width(Metric_Name ~ px(450),
+              Metric_Iglu ~ px(250),
+              Reference ~ px(250)) %>% 
+   tab_options(table.font.size = "medium", 
+               data_row.padding = px(2), 
+               footnotes.padding = px(2), 
+               source_notes.padding = px(2))
+```
